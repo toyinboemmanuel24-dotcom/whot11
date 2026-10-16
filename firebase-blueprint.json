@@ -1,0 +1,184 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Multiplayer Wott game room containing game state, players summary, discard pile, and turn indicators",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique room code",
+          "maxLength": 64
+        },
+        "hostId": {
+          "type": "string",
+          "description": "UID or identifier of the room creator",
+          "maxLength": 128
+        },
+        "maxPlayers": {
+          "type": "number",
+          "description": "Target number of players (2 to 8)"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current status of the game",
+          "enum": ["waiting", "in_progress", "finished"]
+        },
+        "turnPlayerId": {
+          "type": "string",
+          "description": "Player ID whose turn it is currently",
+          "maxLength": 128
+        },
+        "marketCount": {
+          "type": "number",
+          "description": "Number of cards remaining in the general market"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Room creation time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update time"
+        }
+      },
+      "required": ["id", "hostId", "maxPlayers", "status"]
+    },
+    "PlayerHand": {
+      "title": "PlayerHand",
+      "description": "Private card hand for an individual player in a room",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "Owner player identifier",
+          "maxLength": 128
+        },
+        "roomId": {
+          "type": "string",
+          "description": "Associated room identifier",
+          "maxLength": 64
+        },
+        "cards": {
+          "type": "array",
+          "description": "Array of card objects held by the player"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last hand update"
+        }
+      },
+      "required": ["playerId", "roomId"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Real-time in-game text or emoji chat message",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Message ID",
+          "maxLength": 128
+        },
+        "roomId": {
+          "type": "string",
+          "description": "Room ID message belongs to",
+          "maxLength": 64
+        },
+        "senderId": {
+          "type": "string",
+          "description": "ID of player who sent message",
+          "maxLength": 128
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of sender",
+          "maxLength": 64
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text",
+          "maxLength": 500
+        },
+        "type": {
+          "type": "string",
+          "description": "Type of chat message",
+          "enum": ["chat", "system", "action"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["roomId", "senderId", "senderName", "text"]
+    },
+    "Signal": {
+      "title": "Signal",
+      "description": "WebRTC peer connection signaling data for voice chat",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "description": "Room ID",
+          "maxLength": 64
+        },
+        "from": {
+          "type": "string",
+          "description": "Sender player ID",
+          "maxLength": 128
+        },
+        "to": {
+          "type": "string",
+          "description": "Recipient player ID",
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "description": "Signal type",
+          "enum": ["offer", "answer", "ice"]
+        },
+        "payload": {
+          "type": "string",
+          "description": "Serialized SDP or ICE candidate",
+          "maxLength": 4096
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Signal creation time"
+        }
+      },
+      "required": ["roomId", "from", "to", "type", "payload"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": {
+        "$ref": "#/entities/Room"
+      },
+      "description": "Stores Wott game room state, players summary, current turn, and discard pile"
+    },
+    "/rooms/{roomId}/playerHands/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerHand"
+      },
+      "description": "Private hand for each player ensuring opponents cannot view hidden cards"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/ChatMessage"
+      },
+      "description": "Live text chat and game alerts for players in the room"
+    },
+    "/rooms/{roomId}/signals/{signalId}": {
+      "schema": {
+        "$ref": "#/entities/Signal"
+      },
+      "description": "WebRTC voice signaling messages exchanged between players"
+    }
+  }
+}

@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Room collection
+    match /rooms/{roomId} {
+      allow read: if isSignedIn() && isValidId(roomId);
+      allow create: if isSignedIn() && isValidId(roomId)
+        && request.resource.data.id is string
+        && request.resource.data.hostId is string
+        && request.resource.data.maxPlayers is number
+        && request.resource.data.status in ['waiting', 'in_progress', 'finished'];
+      allow update: if isSignedIn() && isValidId(roomId);
+      allow delete: if isSignedIn() && isValidId(roomId);
+
+      // Private player hand: only the player holding the cards can read their hand!
+      match /playerHands/{playerId} {
+        allow read: if isSignedIn() && (request.auth.uid == playerId || request.auth.uid == resource.data.playerId);
+        allow write: if isSignedIn() && isValidId(playerId);
+      }
+
+      // Live chat messages
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && isValidId(messageId);
+        allow create: if isSignedIn() && isValidId(messageId)
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 500;
+        allow update, delete: if isSignedIn() && isValidId(messageId) && resource.data.senderId == request.auth.uid;
+      }
+
+      // WebRTC voice signaling
+      match /signals/{signalId} {
+        allow read: if isSignedIn() && isValidId(signalId);
+        allow create: if isSignedIn() && isValidId(signalId)
+          && request.resource.data.from == request.auth.uid;
+        allow delete: if isSignedIn() && isValidId(signalId);
+      }
+    }
+
+    // Connection test document
+    match /test/{docId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
