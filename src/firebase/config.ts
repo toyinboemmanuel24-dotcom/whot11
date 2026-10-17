@@ -1,5 +1,12 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+  User,
+} from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -8,6 +15,7 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0
 // Export Firestore with specific database ID as required
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {
   CREATE = 'create',
@@ -44,13 +52,13 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+      providerInfo: auth.currentUser?.providerData?.map((provider) => ({
         providerId: provider.providerId,
         email: provider.email,
-      })) || []
+      })) || [],
     },
     operationType,
-    path
+    path,
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
@@ -67,15 +75,25 @@ export async function testConnection() {
   }
 }
 
-// Auto sign in anonymously for seamless multiplayer room access
-export function ensureAuthenticated(callback?: (user: User) => void) {
+// Sign in with Google using popup as instructed by Firebase Skill
+export async function signInWithGoogle(): Promise<User> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (error) {
+    console.error('Google Sign-In failed:', error);
+    throw error;
+  }
+}
+
+// Sign out helper
+export async function logOut(): Promise<void> {
+  return signOut(auth);
+}
+
+// Listen to Auth State changes
+export function onAuthUserChanged(callback: (user: User | null) => void) {
   return onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      signInAnonymously(auth).catch((err) => {
-        console.error('Anonymous auth failed:', err);
-      });
-    } else {
-      if (callback) callback(user);
-    }
+    callback(user);
   });
 }

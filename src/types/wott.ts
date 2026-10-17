@@ -63,6 +63,7 @@ export interface ChatMessage {
   text: string;
   type: 'chat' | 'system' | 'action';
   timestamp: number;
+  likes?: string[]; // Array of player IDs who liked this message
 }
 
 export interface WebRTCSignal {

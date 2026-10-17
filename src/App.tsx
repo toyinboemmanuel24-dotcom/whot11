@@ -9,11 +9,14 @@ import {
 import {
   db,
   auth,
-  ensureAuthenticated,
+  signInWithGoogle,
+  logOut,
+  onAuthUserChanged,
   testConnection,
   handleFirestoreError,
   OperationType,
 } from './firebase/config';
+import { User } from 'firebase/auth';
 import { Card, CardShape, GameRoom, PlayerSummary } from './types/wott';
 import {
   dealNewGame,
@@ -26,6 +29,7 @@ import { ChatVoiceBar } from './components/ChatVoiceBar';
 import { RulesModal } from './components/RulesModal';
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string>('');
   const [userName, setUserName] = useState<string>(() => {
     return localStorage.getItem('wott_player_name') || `Player_${Math.floor(1000 + Math.random() * 9000)}`;
@@ -47,11 +51,51 @@ export default function App() {
   // Initialize Firebase Auth & test connection on mount
   useEffect(() => {
     testConnection();
-    const unsubscribe = ensureAuthenticated((user) => {
-      setCurrentUserId(user.uid);
+    const unsubscribe = onAuthUserChanged((user) => {
+      setCurrentUser(user);
+      if (user) {
+        setCurrentUserId(user.uid);
+        if (!localStorage.getItem('wott_player_name') && user.displayName) {
+          setUserName(user.displayName);
+        }
+      } else {
+        setCurrentUserId('');
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  const handleGoogleSignIn = async () => {
+    setIsCreatingOrJoining(true);
+    setErrorMessage(null);
+    try {
+      const user = await signInWithGoogle();
+      setCurrentUser(user);
+      setCurrentUserId(user.uid);
+      if (user.displayName) {
+        setUserName(user.displayName);
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (!errorMsg.includes('popup-closed-by-user')) {
+        setErrorMessage('Google Sign-In failed or was cancelled. Please try again.');
+      }
+    } finally {
+      setIsCreatingOrJoining(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await logOut();
+      setCurrentUser(null);
+      setCurrentUserId('');
+      setRoom(null);
+      setCurrentRoomId(null);
+    } catch {
+      // Ignore
+    }
+  };
 
   // Save profile to local storage
   useEffect(() => {
@@ -158,15 +202,33 @@ export default function App() {
 
   // Create Room
   const handleCreateRoom = async (maxPlayers: number) => {
-    if (!currentUserId) return;
-    setIsCreatingOrJoining(true);
     setErrorMessage(null);
+    let uid = currentUserId;
+
+    if (!currentUser || !uid) {
+      setIsCreatingOrJoining(true);
+      try {
+        const user = await signInWithGoogle();
+        setCurrentUser(user);
+        setCurrentUserId(user.uid);
+        uid = user.uid;
+        if (user.displayName) {
+          setUserName(user.displayName);
+        }
+      } catch {
+        setIsCreatingOrJoining(false);
+        setErrorMessage('Please sign in with Google to create a room.');
+        return;
+      }
+    }
+
+    setIsCreatingOrJoining(true);
 
     try {
       const roomCode = `WOTT-${Math.floor(1000 + Math.random() * 9000)}`;
 
       const newPlayer: PlayerSummary = {
-        id: currentUserId,
+        id: uid,
         name: userName.trim() || 'Player 1',
         avatar: userAvatar,
         cardCount: 5,
@@ -181,11 +243,11 @@ export default function App() {
       const newRoom: GameRoom = {
         id: roomCode,
         name: `Wott Table ${roomCode}`,
-        hostId: currentUserId,
+        hostId: uid,
         maxPlayers,
         status: 'waiting',
         players: [newPlayer],
-        turnPlayerId: currentUserId,
+        turnPlayerId: uid,
         turnIndex: 0,
         direction: 1,
         activeCard: {
@@ -220,10 +282,29 @@ export default function App() {
 
   // Join Room
   const handleJoinRoom = async (roomCode: string) => {
-    if (!currentUserId || !roomCode.trim()) return;
+    if (!roomCode.trim()) return;
     const cleanCode = roomCode.trim().toUpperCase();
-    setIsCreatingOrJoining(true);
     setErrorMessage(null);
+    let uid = currentUserId;
+
+    if (!currentUser || !uid) {
+      setIsCreatingOrJoining(true);
+      try {
+        const user = await signInWithGoogle();
+        setCurrentUser(user);
+        setCurrentUserId(user.uid);
+        uid = user.uid;
+        if (user.displayName) {
+          setUserName(user.displayName);
+        }
+      } catch {
+        setIsCreatingOrJoining(false);
+        setErrorMessage('Please sign in with Google to enter a room.');
+        return;
+      }
+    }
+
+    setIsCreatingOrJoining(true);
 
     try {
       const roomRef = doc(db, 'rooms', cleanCode);
@@ -237,7 +318,7 @@ export default function App() {
       const existingRoom = snapshot.data() as GameRoom;
 
       // Check if player is already in room
-      const alreadyIn = existingRoom.players.some((p) => p.id === currentUserId);
+      const alreadyIn = existingRoom.players.some((p) => p.id === uid);
 
       if (!alreadyIn) {
         if (existingRoom.status !== 'waiting') {
@@ -251,7 +332,7 @@ export default function App() {
         }
 
         const newPlayer: PlayerSummary = {
-          id: currentUserId,
+          id: uid,
           name: userName.trim() || `Player ${existingRoom.players.length + 1}`,
           avatar: userAvatar,
           cardCount: 5,
@@ -813,6 +894,7 @@ export default function App() {
         {!room || room.status === 'waiting' ? (
           <LobbyView
             room={room}
+            currentUser={currentUser}
             currentUserId={currentUserId}
             userName={userName}
             setUserName={setUserName}
@@ -823,6 +905,8 @@ export default function App() {
             onStartGame={handleStartGame}
             onAddBot={handleAddBot}
             onOpenRules={() => setShowRulesModal(true)}
+            onSignInWithGoogle={handleGoogleSignIn}
+            onSignOut={handleSignOut}
             isCreatingOrJoining={isCreatingOrJoining}
             errorMessage={errorMessage}
             clearError={() => setErrorMessage(null)}

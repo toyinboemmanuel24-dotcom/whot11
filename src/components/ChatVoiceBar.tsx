@@ -8,11 +8,14 @@ import {
   Send,
   ChevronUp,
   ChevronDown,
+  Heart,
   Sparkles,
 } from 'lucide-react';
 import {
   collection,
   addDoc,
+  doc,
+  updateDoc,
   query,
   orderBy,
   limit,
@@ -20,7 +23,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase/config';
 import { ChatMessage, PlayerSummary } from '../types/wott';
-import { VoiceChatController } from '../utils/audio';
+import { VoiceChatController, sounds } from '../utils/audio';
 
 interface ChatVoiceBarProps {
   roomId: string;
@@ -40,6 +43,8 @@ const QUICK_SHOUTS = [
   'I have you! 😂',
 ];
 
+const HOLD_DURATION_MS = 3000; // 3 seconds required hold
+
 export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
   roomId,
   currentPlayer,
@@ -56,6 +61,13 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
 
+  // Hold-to-Like States
+  const [holdingMessageId, setHoldingMessageId] = useState<string | null>(null);
+  const [holdProgress, setHoldProgress] = useState<number>(0); // 0 to 100%
+  const [recentlyLikedId, setRecentlyLikedId] = useState<string | null>(null);
+
+  const holdIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const holdStartTimeRef = useRef<number | null>(null);
   const voiceCtrlRef = useRef<VoiceChatController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -82,8 +94,8 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
       q,
       (snapshot) => {
         const msgs: ChatMessage[] = [];
-        snapshot.forEach((doc) => {
-          msgs.push({ id: doc.id, ...(doc.data() as Omit<ChatMessage, 'id'>) });
+        snapshot.forEach((docSnap) => {
+          msgs.push({ id: docSnap.id, ...(docSnap.data() as Omit<ChatMessage, 'id'>) });
         });
         setMessages(msgs);
 
@@ -109,6 +121,76 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
     }
   }, [isExpanded, messages]);
 
+  // Clean up any active hold timer on unmount
+  useEffect(() => {
+    return () => {
+      if (holdIntervalRef.current) clearInterval(holdIntervalRef.current);
+    };
+  }, []);
+
+  // Handle message hold start (3-second timer)
+  const startHoldMessage = (message: ChatMessage) => {
+    if (holdIntervalRef.current) clearInterval(holdIntervalRef.current);
+
+    setHoldingMessageId(message.id);
+    setHoldProgress(0);
+    holdStartTimeRef.current = Date.now();
+
+    holdIntervalRef.current = setInterval(() => {
+      if (!holdStartTimeRef.current) return;
+      const elapsed = Date.now() - holdStartTimeRef.current;
+      const progress = Math.min(100, Math.round((elapsed / HOLD_DURATION_MS) * 100));
+      setHoldProgress(progress);
+
+      if (elapsed >= HOLD_DURATION_MS) {
+        // 3 seconds reached! Trigger like!
+        if (holdIntervalRef.current) clearInterval(holdIntervalRef.current);
+        holdIntervalRef.current = null;
+        holdStartTimeRef.current = null;
+        setHoldingMessageId(null);
+        setHoldProgress(0);
+
+        handleTriggerLike(message);
+      }
+    }, 40);
+  };
+
+  // Cancel hold if user releases or moves away before 3 seconds
+  const cancelHoldMessage = () => {
+    if (holdIntervalRef.current) {
+      clearInterval(holdIntervalRef.current);
+      holdIntervalRef.current = null;
+    }
+    holdStartTimeRef.current = null;
+    setHoldingMessageId(null);
+    setHoldProgress(0);
+  };
+
+  // Toggle/Apply Like in Firestore
+  const handleTriggerLike = async (message: ChatMessage) => {
+    sounds.playHeartPop();
+
+    setRecentlyLikedId(message.id);
+    setTimeout(() => setRecentlyLikedId(null), 1200);
+
+    try {
+      const msgRef = doc(db, `rooms/${roomId}/messages`, message.id);
+      const currentLikes = message.likes || [];
+      const hasLiked = currentLikes.includes(currentPlayer.id);
+
+      // Toggle like state
+      const updatedLikes = hasLiked
+        ? currentLikes.filter((id) => id !== currentPlayer.id)
+        : [...currentLikes, currentPlayer.id];
+
+      await updateDoc(msgRef, {
+        likes: updatedLikes,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}/messages/${message.id}`);
+    }
+  };
+
   const handleSendMessage = async (textToSend?: string) => {
     const text = (textToSend || inputText).trim();
     if (!text || !roomId) return;
@@ -122,6 +204,7 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
         senderAvatar: currentPlayer.avatar,
         text,
         type: 'chat',
+        likes: [],
         timestamp: Date.now(),
       });
       setInputText('');
@@ -135,7 +218,6 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
     setMicError(null);
 
     if (!isMicOn) {
-      // First try to initialize mic if not yet acquired
       const acquired = await voiceCtrlRef.current.initLocalMicrophone();
       if (!acquired) {
         setMicError('Microphone permission needed or unavailable');
@@ -168,8 +250,8 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
     <div className="fixed bottom-3 right-3 sm:right-6 z-40 max-w-sm w-[92vw] sm:w-96 flex flex-col justify-end pointer-events-none">
       {/* Expanded Chat Box */}
       {isExpanded && (
-        <div className="pointer-events-auto mb-2 bg-stone-900/95 border border-amber-600/40 rounded-2xl shadow-2xl backdrop-blur-md overflow-hidden flex flex-col max-h-[380px] h-[340px] animate-scale-up">
-          {/* Header */}
+        <div className="pointer-events-auto mb-2 bg-stone-900/95 border border-amber-600/40 rounded-2xl shadow-2xl backdrop-blur-md overflow-hidden flex flex-col max-h-[420px] h-[370px] animate-scale-up">
+          {/* Header with Like Tip */}
           <div className="px-4 py-2.5 bg-stone-950/90 border-b border-stone-800 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <MessageSquare size={16} className="text-amber-400" />
@@ -177,10 +259,19 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
             </div>
             <button
               onClick={() => setIsExpanded(false)}
-              className="text-stone-400 hover:text-stone-200 text-xs p-1"
+              className="text-stone-400 hover:text-stone-200 text-xs p-1 cursor-pointer"
             >
               <ChevronDown size={18} />
             </button>
+          </div>
+
+          {/* Subheader hint for Hold-to-Like */}
+          <div className="px-3 py-1 bg-amber-950/40 border-b border-amber-900/30 flex items-center justify-between text-[10px] text-amber-300 font-medium">
+            <span className="flex items-center gap-1">
+              <Heart size={10} className="text-pink-400 fill-pink-400 animate-pulse" />
+              <span>Hold message for <strong>3 seconds</strong> to like it!</span>
+            </span>
+            <span className="text-stone-400">❤️ 3s Hold</span>
           </div>
 
           {/* Quick Reaction Pills */}
@@ -197,7 +288,7 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
           </div>
 
           {/* Message List */}
-          <div className="flex-1 p-3 overflow-y-auto space-y-2 text-xs">
+          <div className="flex-1 p-3 overflow-y-auto space-y-2.5 text-xs select-none">
             {messages.length === 0 ? (
               <div className="text-center text-stone-500 py-8 italic text-xs">
                 No chat yet. Drop a message or reaction!
@@ -205,26 +296,83 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
             ) : (
               messages.map((msg) => {
                 const isMe = msg.senderId === currentPlayer.id;
+                const isHoldingThis = holdingMessageId === msg.id;
+                const likesCount = (msg.likes || []).length;
+                const hasLiked = (msg.likes || []).includes(currentPlayer.id);
+                const isBursting = recentlyLikedId === msg.id;
+
                 return (
                   <div
                     key={msg.id}
-                    className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                    className={`flex flex-col relative group ${isMe ? 'items-end' : 'items-start'}`}
                   >
+                    {/* Sender Header */}
                     <div className="flex items-center gap-1.5 text-[10px] text-stone-400 mb-0.5">
                       <span>{msg.senderAvatar}</span>
                       <span className="font-medium text-stone-300">
                         {isMe ? 'You' : msg.senderName}
                       </span>
                     </div>
+
+                    {/* Interactive Message Bubble with 3-Second Hold */}
                     <div
-                      className={`px-3 py-1.5 rounded-xl max-w-[85%] break-words leading-relaxed shadow-sm ${
+                      onMouseDown={() => startHoldMessage(msg)}
+                      onMouseUp={cancelHoldMessage}
+                      onMouseLeave={cancelHoldMessage}
+                      onTouchStart={() => startHoldMessage(msg)}
+                      onTouchEnd={cancelHoldMessage}
+                      onTouchCancel={cancelHoldMessage}
+                      className={`relative px-3 py-1.5 rounded-xl max-w-[85%] break-words leading-relaxed shadow-sm transition-all cursor-pointer select-none ${
                         isMe
                           ? 'bg-amber-600 text-stone-950 font-medium rounded-tr-none'
                           : 'bg-stone-800 text-stone-100 border border-stone-700/60 rounded-tl-none'
-                      }`}
+                      } ${isHoldingThis ? 'scale-105 ring-2 ring-pink-500 shadow-pink-500/30' : ''}`}
                     >
-                      {msg.text}
+                      {/* Message Text */}
+                      <span>{msg.text}</span>
+
+                      {/* Hold-to-Like Progress Overlay */}
+                      {isHoldingThis && (
+                        <div className="absolute inset-0 bg-stone-950/80 backdrop-blur-xs rounded-xl flex items-center justify-between px-2.5 text-[10px] text-pink-300 font-bold z-20 overflow-hidden">
+                          {/* Animated progress bar fill */}
+                          <div
+                            className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-pink-600/40 to-pink-500/70 transition-all duration-75"
+                            style={{ width: `${holdProgress}%` }}
+                          />
+                          <div className="relative z-10 flex items-center gap-1">
+                            <Heart size={12} className="text-pink-400 fill-pink-400 animate-ping" />
+                            <span>Holding {Math.ceil(((100 - holdProgress) * 3) / 100)}s...</span>
+                          </div>
+                          <span className="relative z-10 font-mono text-[9px] text-pink-200">
+                            {holdProgress}%
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Floating Burst Heart on Completion */}
+                      {isBursting && (
+                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 pointer-events-none z-30 animate-bounce">
+                          <span className="text-xl">❤️</span>
+                        </div>
+                      )}
                     </div>
+
+                    {/* Likes Badge Indicator (Below/Beside Bubble) */}
+                    {likesCount > 0 && (
+                      <div
+                        className={`flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold shadow-sm transition-all ${
+                          hasLiked
+                            ? 'bg-pink-950/80 text-pink-300 border border-pink-700/60'
+                            : 'bg-stone-950/80 text-stone-300 border border-stone-800'
+                        }`}
+                      >
+                        <Heart
+                          size={11}
+                          className={hasLiked ? 'text-pink-400 fill-pink-400' : 'text-stone-400'}
+                        />
+                        <span>{likesCount}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -244,14 +392,14 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder="Chat with players..."
+              placeholder="Chat with players (hold to like ❤️)"
               maxLength={200}
               className="flex-1 bg-stone-900 border border-stone-700 text-xs text-stone-100 px-3 py-1.5 rounded-xl focus:outline-none focus:border-amber-500"
             />
             <button
               type="submit"
               disabled={!inputText.trim()}
-              className="p-2 rounded-xl bg-amber-500 text-stone-950 font-bold hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              className="p-2 rounded-xl bg-amber-500 text-stone-950 font-bold hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
             >
               <Send size={14} />
             </button>

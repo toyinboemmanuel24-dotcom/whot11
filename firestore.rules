@@ -40,7 +40,8 @@ service cloud.firestore {
           && request.resource.data.senderId == request.auth.uid
           && request.resource.data.text is string
           && request.resource.data.text.size() <= 500;
-        allow update, delete: if isSignedIn() && isValidId(messageId) && resource.data.senderId == request.auth.uid;
+        allow update: if isSignedIn() && isValidId(messageId);
+        allow delete: if isSignedIn() && isValidId(messageId) && resource.data.senderId == request.auth.uid;
       }
 
       // WebRTC voice signaling

@@ -108,6 +108,10 @@
           "description": "Type of chat message",
           "enum": ["chat", "system", "action"]
         },
+        "likes": {
+          "type": "array",
+          "description": "List of player IDs who liked this message"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
